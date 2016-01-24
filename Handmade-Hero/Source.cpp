@@ -54,6 +54,29 @@ win32_window_dimension Win32GetWindowDimension(HWND Window)
 	return Result;
 }
 
+internal void RenderScreenColor(win32_offscreen_buffer buffer, uint8 red, uint8 green, uint8 blue)
+{
+	int width = buffer.BitmapWidth;
+	int height = buffer.BitmapHeight;
+
+	// get to the first row of pixels
+	uint8 *row = (uint8 *)buffer.BitmapMemory;
+	for (int y = 0; y < height; y++)
+	{
+		uint32 *pixel = (uint32 *)row;
+		for (int x = 0; x < width; x++)
+		{
+			// rgb bgr
+			uint32 color = blue | green << 8 | red << 16;
+			*pixel = color;
+			pixel++;
+		}
+
+		row += buffer.Pitch;
+
+	}
+}
+
 internal void
 RenderWeirdGradient(win32_offscreen_buffer Buffer, int BlueOffset, int GreenOffset)
 {
@@ -221,6 +244,7 @@ WinMain(HINSTANCE Instance,
 		{
 			int XOffset = 0;
 			int YOffset = 0;
+			int frameCounter = 0;
 
 			Running = true;
 			while (Running)
