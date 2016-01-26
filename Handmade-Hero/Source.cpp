@@ -8,6 +8,7 @@ $Notice: (C) Copyright 2014 by Molly Rocket, Inc. All Rights Reserved. $
 
 #include <windows.h>
 #include <stdint.h>
+#include <Xinput.h>
 
 #define internal static 
 #define local_persist static 
@@ -29,11 +30,10 @@ struct win32_offscreen_buffer
 	void *BitmapMemory;
 	int BitmapWidth;
 	int BitmapHeight;
-	int BytesPerPixel;
 	int Pitch;
 };
 // TODO(casey): This is a global for now.
-global_variable bool Running;
+global_variable bool GlobalRunning;
 global_variable win32_offscreen_buffer globalBuffer;
 
 struct win32_window_dimension
@@ -46,7 +46,7 @@ win32_window_dimension Win32GetWindowDimension(HWND Window)
 {
 	win32_window_dimension Result;
 
-	RECT ClientRect;
+	RECT ClientRect; //ClientRect = drawable area of our window. So our window - the border
 	GetClientRect(Window, &ClientRect);
 	Result.Width = ClientRect.right - ClientRect.left;
 	Result.Height = ClientRect.bottom - ClientRect.top;
@@ -62,10 +62,10 @@ RenderWeirdGradient(win32_offscreen_buffer Buffer, int BlueOffset, int GreenOffs
 
 	//int Pitch = Width*Buffer.BytesPerPixel;
 	uint8 *Row = (uint8 *)Buffer.BitmapMemory;
-	for (int Y = 0; Y < Buffer.BitmapHeight; ++Y)
+	for (int Y = 0; Y < Height; ++Y)
 	{
 		uint32 *Pixel = (uint32 *)Row;
-		for (int X = 0; X < Buffer.BitmapWidth; ++X)
+		for (int X = 0; X < Width; ++X)
 		{
 			/*
 			Since RGB value is a 32 bit value, we just have two 8-bit values be our blue and green value.
@@ -94,7 +94,7 @@ Win32ResizeDIBSection(win32_offscreen_buffer *Buffer, int Width, int Height)
 
 	Buffer->BitmapWidth = Width;
 	Buffer->BitmapHeight = Height;
-	Buffer->BytesPerPixel = 4;
+	int BytesPerPixel = 4;
 
 	Buffer->Info.bmiHeader.biSize = sizeof(Buffer->Info.bmiHeader);
 	Buffer->Info.bmiHeader.biWidth = Buffer->BitmapWidth;
@@ -106,23 +106,25 @@ Win32ResizeDIBSection(win32_offscreen_buffer *Buffer, int Width, int Height)
 	// NOTE(casey): Thank you to Chris Hecker of Spy Party fame
 	// for clarifying the deal with StretchDIBits and BitBlt!
 	// No more DC for us.
-	int BitmapMemorySize = (Buffer->BitmapWidth*Buffer->BitmapHeight)*Buffer->BytesPerPixel;
-	Buffer->BitmapMemory = VirtualAlloc(0, BitmapMemorySize, MEM_COMMIT, PAGE_READWRITE);
-	Buffer->Pitch = Width * Buffer->BytesPerPixel;
+	int BitmapMemorySize = (Buffer->BitmapWidth*Buffer->BitmapHeight)*BytesPerPixel;
+	Buffer->BitmapMemory = VirtualAlloc(0, BitmapMemorySize, MEM_COMMIT, PAGE_READWRITE); // this will reserve the amount of pages needed to hold BitMapMemorySize
+	Buffer->Pitch = Width * BytesPerPixel; // pitch = how many bytes a pointer has to move to get from one row (of pixels) to the next row.
+	//width = how wide a row is. row width * how many bytes is a pixel = the pitch.
 	// TODO(casey): Probably clear this to black
 }
 
 internal void
 Win32DisplayBufferInWindow(HDC DeviceContext, int WindowWidth, int WindowHeight,
-	win32_offscreen_buffer Buffer, int X, int Y)
+	win32_offscreen_buffer Buffer)
 {
+	//TODO - aspect ratio correction.
 	StretchDIBits(DeviceContext,
 		/*
 		X, Y, Width, Height,
 		X, Y, Width, Height,
 		*/
-		0, 0, Buffer.BitmapWidth, Buffer.BitmapHeight,
 		0, 0, WindowWidth, WindowHeight,
+		0, 0, Buffer.BitmapWidth, Buffer.BitmapHeight,
 		Buffer.BitmapMemory,
 		&Buffer.Info,
 		DIB_RGB_COLORS, SRCCOPY);
@@ -140,14 +142,12 @@ Win32MainWindowCallback(HWND Window,
 	{
 	case WM_SIZE:
 	{
-		win32_window_dimension Dimension = Win32GetWindowDimension(Window);
-		Win32ResizeDIBSection(&globalBuffer, Dimension.Width, Dimension.Height);
 	} break;
 
 	case WM_CLOSE:
 	{
 		// TODO(casey): Handle this with a message to the user?
-		Running = false;
+		GlobalRunning = false;
 	} break;
 
 	case WM_ACTIVATEAPP:
@@ -158,10 +158,15 @@ Win32MainWindowCallback(HWND Window,
 	case WM_DESTROY:
 	{
 		// TODO(casey): Handle this as an error - recreate window?
-		Running = false;
+		GlobalRunning = false;
 	} break;
-
-	case WM_PAINT:
+	/*
+	Windows sometimes will block our process to do a resize.
+	Whenever windows blocks our process, windows will tell us to repaint.
+	THis is the repaint that is called.
+	We do the same blit in the main()
+	*/
+	case WM_PAINT: 
 	{
 		PAINTSTRUCT Paint;
 		HDC DeviceContext = BeginPaint(Window, &Paint);
@@ -169,8 +174,9 @@ Win32MainWindowCallback(HWND Window,
 		int Y = Paint.rcPaint.top;
 		win32_window_dimension Dimension = Win32GetWindowDimension(Window);
 
-		Win32DisplayBufferInWindow(DeviceContext, Dimension.Width, Dimension.Height, globalBuffer, X, Y);
+		Win32DisplayBufferInWindow(DeviceContext, Dimension.Width, Dimension.Height, globalBuffer);
 		EndPaint(Window, &Paint);
+		//BeginPaint ~ EndPaint tells windows that you have updated the dirty region
 	} break;
 
 	default:
@@ -194,7 +200,9 @@ WinMain(HINSTANCE Instance,
 	Empty brackets means clear the memory this struct occupies to 0
 	*/
 	WNDCLASS windowClass = {};
-	windowClass.style = CS_HREDRAW | CS_VREDRAW;
+	Win32ResizeDIBSection(&globalBuffer, 1280, 720);
+
+	windowClass.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
 	windowClass.lpfnWndProc = Win32MainWindowCallback;
 	windowClass.hInstance = Instance;
 	windowClass.lpszClassName = L"HandmadeHeroWindowClass";
@@ -221,29 +229,59 @@ WinMain(HINSTANCE Instance,
 		{
 			int XOffset = 0;
 			int YOffset = 0;
-
-			Running = true;
-			while (Running)
+			HDC DeviceContext = GetDC(Window);
+			GlobalRunning = true;
+			while (GlobalRunning)
 			{
 				MSG message;
 				while (PeekMessage(&message, 0, 0, 0, PM_REMOVE))
 				{
 					if (message.message == WM_QUIT)
 					{
-						Running = false;
+						GlobalRunning = false;
 					}
 
 					TranslateMessage(&message);
 					DispatchMessage(&message);
 				}
 
+				//TODO - should we poll this more frequently?
+				for (DWORD ControllerIndex = 0; ControllerIndex < XUSER_MAX_COUNT; ControllerIndex++)
+				{
+					XINPUT_STATE ControllerState;
+					if (XInputGetState(ControllerIndex, &ControllerState) == ERROR_SUCCESS)
+					{
+						//this controller is plugged in
+						// see if controllerstate.dwpacketstate increments too rapidly
+						XINPUT_GAMEPAD* Pad = &ControllerState.Gamepad;
+						bool Up = Pad->wButtons & XINPUT_GAMEPAD_DPAD_UP;
+						bool Down = Pad->wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
+						bool Left = Pad->wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
+						bool Right = Pad->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
+						bool Start = Pad->wButtons & XINPUT_GAMEPAD_START;
+						bool Back = Pad->wButtons & XINPUT_GAMEPAD_BACK;
+						bool LeftShoulder = Pad->wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER;
+						bool RightShoulder = Pad->wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER;
+						bool AButton = Pad->wButtons & XINPUT_GAMEPAD_A;
+						bool BButton = Pad->wButtons & XINPUT_GAMEPAD_B;
+						bool XButton = Pad->wButtons & XINPUT_GAMEPAD_X;
+						bool yButton = Pad->wButtons & XINPUT_GAMEPAD_Y;
+
+						int16 StickX = Pad->sThumbLX;
+						int16 StickY = Pad->sThumbLY;
+					}
+					else
+					{
+						// controller is not available
+					}
+				}
+
 				RenderWeirdGradient(globalBuffer, XOffset, YOffset);
 				XOffset++;
+				// we force blit the buffer to the scren after we process messages
 
-				HDC DeviceContext = GetDC(Window);
 				win32_window_dimension Dimension = Win32GetWindowDimension(Window);
-				Win32DisplayBufferInWindow(DeviceContext, Dimension.Width, Dimension.Height, globalBuffer, 0, 0);
-				ReleaseDC(Window, DeviceContext);
+				Win32DisplayBufferInWindow(DeviceContext, Dimension.Width, Dimension.Height, globalBuffer);
 			}
 		}
 		else
