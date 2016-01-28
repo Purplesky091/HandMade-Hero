@@ -41,23 +41,33 @@ struct win32_window_dimension
 
 #define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex,  XINPUT_STATE* pState) //if you pass the macro a parameter, it's going to define a function with that name
 #define X_INPUT_SET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex,  XINPUT_VIBRATION* pVibration)
-typedef X_INPUT_GET_STATE(x_input_get_state);
-typedef X_INPUT_SET_STATE(x_input_set_state);
 
+typedef X_INPUT_GET_STATE(x_input_get_state);
 X_INPUT_GET_STATE(XInputGetStateStub)
 {
 	return 0;
 }
+global_variable x_input_get_state* XInputGetState_ = XInputGetStateStub; //makes a pointer to a function with the x_input_get_state function signature
+#define XInputGetState XInputGetState_
 
+typedef X_INPUT_SET_STATE(x_input_set_state);
 X_INPUT_SET_STATE(XInputSetStateStub)
 {
 	return 0;
 }
+global_variable x_input_set_state* XInputSetState_ = XInputSetStateStub;
+#define XInputSetState XInputSetState_
 
-global_variable x_input_get_state* XInputGetState_; //makes a pointer to a function with the x_input_get_state function signature
-global_variable x_input_set_state* XInputSetState_;
-#define XInputGetState XInputGetState_;
-#define XInputSetState XinputSetState_;
+internal void Win32LoadXInput()
+{
+	HMODULE XInputLibrary = LoadLibrary(L"xinput1_3.dll");
+	if (XInputLibrary)
+	{
+		XInputGetState = (x_input_get_state *) GetProcAddress(XInputLibrary, "XInputGetState");
+		XInputSetState = (x_input_set_state *) GetProcAddress(XInputLibrary, "XInputSetState");
+	}
+}
+
 
 // TODO(casey): This is a global for now.
 global_variable bool GlobalRunning;
@@ -65,7 +75,7 @@ global_variable win32_offscreen_buffer globalBuffer;
 
 
 
-win32_window_dimension Win32GetWindowDimension(HWND Window)
+internal win32_window_dimension Win32GetWindowDimension(HWND Window)
 {
 	win32_window_dimension Result;
 
@@ -138,7 +148,7 @@ Win32ResizeDIBSection(win32_offscreen_buffer *Buffer, int Width, int Height)
 
 internal void
 Win32DisplayBufferInWindow(HDC DeviceContext, int WindowWidth, int WindowHeight,
-	win32_offscreen_buffer Buffer)
+	win32_offscreen_buffer *Buffer)
 {
 	//TODO - aspect ratio correction.
 	StretchDIBits(DeviceContext,
@@ -147,9 +157,9 @@ Win32DisplayBufferInWindow(HDC DeviceContext, int WindowWidth, int WindowHeight,
 		X, Y, Width, Height,
 		*/
 		0, 0, WindowWidth, WindowHeight,
-		0, 0, Buffer.BitmapWidth, Buffer.BitmapHeight,
-		Buffer.BitmapMemory,
-		&Buffer.Info,
+		0, 0, Buffer->BitmapWidth, Buffer->BitmapHeight,
+		Buffer->BitmapMemory,
+		&Buffer->Info,
 		DIB_RGB_COLORS, SRCCOPY);
 }
 
@@ -172,6 +182,62 @@ Win32MainWindowCallback(HWND Window,
 		// TODO(casey): Handle this with a message to the user?
 		GlobalRunning = false;
 	} break;
+
+	case WM_SYSKEYUP:
+	case WM_KEYDOWN:
+	case WM_KEYUP:
+	case WM_SYSKEYDOWN:
+	{
+		uint32 VKCode = WParam;
+		bool WasDown = (LParam & (1 << 30)) != 0; //30th bit tells us if the key was down or was it up
+		bool IsDown = (LParam & (1 << 31)) == 0;
+		if(WasDown != IsDown)
+		{
+			if (VKCode == 'W')
+			{
+			}
+			else if (VKCode == 'A')
+			{
+			}
+			else if (VKCode == 'S')
+			{
+			}
+			else if (VKCode == 'D')
+			{
+			}
+			else if (VKCode == 'Q')
+			{
+			}
+			else if (VKCode == 'E')
+			{
+			}
+			else if (VKCode == VK_LEFT)
+			{
+			}
+			else if (VKCode == VK_RIGHT)
+			{
+			}
+			else if (VKCode == VK_DOWN)
+			{
+			}
+			else if (VKCode == VK_ESCAPE)
+			{
+				OutputDebugStringA("Escape: ");
+				if (IsDown)
+				{
+					OutputDebugStringA("IsDown\n");
+				}
+				else if (WasDown)
+				{
+					OutputDebugStringA("WasDown\n");
+				}
+			}
+			else if (VKCode == VK_SPACE)
+			{
+			}
+		}
+
+	}break;
 
 	case WM_ACTIVATEAPP:
 	{
@@ -197,7 +263,7 @@ Win32MainWindowCallback(HWND Window,
 		int Y = Paint.rcPaint.top;
 		win32_window_dimension Dimension = Win32GetWindowDimension(Window);
 
-		Win32DisplayBufferInWindow(DeviceContext, Dimension.Width, Dimension.Height, globalBuffer);
+		Win32DisplayBufferInWindow(DeviceContext, Dimension.Width, Dimension.Height, &globalBuffer);
 		EndPaint(Window, &Paint);
 		//BeginPaint ~ EndPaint tells windows that you have updated the dirty region
 	} break;
@@ -222,6 +288,8 @@ WinMain(HINSTANCE Instance,
 	/*
 	Empty brackets means clear the memory this struct occupies to 0
 	*/
+	Win32LoadXInput();
+
 	WNDCLASS windowClass = {};
 	Win32ResizeDIBSection(&globalBuffer, 1280, 720);
 
@@ -292,6 +360,25 @@ WinMain(HINSTANCE Instance,
 
 						int16 StickX = Pad->sThumbLX;
 						int16 StickY = Pad->sThumbLY;
+
+						XOffset += StickX >> 12;
+						XOffset += StickY >> 12;
+
+						if (LeftShoulder)
+						{
+							XINPUT_VIBRATION Vibration;
+							Vibration.wLeftMotorSpeed = 60000;
+							Vibration.wRightMotorSpeed = 60000;
+							XInputSetState(0, &Vibration);
+						}
+
+						if (RightShoulder)
+						{
+							XINPUT_VIBRATION Vibration;
+							Vibration.wLeftMotorSpeed = 0;
+							Vibration.wRightMotorSpeed = 0;
+							XInputSetState(0, &Vibration);
+						}
 					}
 					else
 					{
@@ -299,12 +386,13 @@ WinMain(HINSTANCE Instance,
 					}
 				}
 
+
 				RenderWeirdGradient(globalBuffer, XOffset, YOffset);
 				XOffset++;
 				// we force blit the buffer to the scren after we process messages
 
 				win32_window_dimension Dimension = Win32GetWindowDimension(Window);
-				Win32DisplayBufferInWindow(DeviceContext, Dimension.Width, Dimension.Height, globalBuffer);
+				Win32DisplayBufferInWindow(DeviceContext, Dimension.Width, Dimension.Height, &globalBuffer);
 			}
 		}
 		else
