@@ -32,15 +32,38 @@ struct win32_offscreen_buffer
 	int BitmapHeight;
 	int Pitch;
 };
-// TODO(casey): This is a global for now.
-global_variable bool GlobalRunning;
-global_variable win32_offscreen_buffer globalBuffer;
 
 struct win32_window_dimension
 {
 	int Width;
 	int Height;
 };
+
+#define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex,  XINPUT_STATE* pState) //if you pass the macro a parameter, it's going to define a function with that name
+#define X_INPUT_SET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex,  XINPUT_VIBRATION* pVibration)
+typedef X_INPUT_GET_STATE(x_input_get_state);
+typedef X_INPUT_SET_STATE(x_input_set_state);
+
+X_INPUT_GET_STATE(XInputGetStateStub)
+{
+	return 0;
+}
+
+X_INPUT_SET_STATE(XInputSetStateStub)
+{
+	return 0;
+}
+
+global_variable x_input_get_state* XInputGetState_; //makes a pointer to a function with the x_input_get_state function signature
+global_variable x_input_set_state* XInputSetState_;
+#define XInputGetState XInputGetState_;
+#define XInputSetState XinputSetState_;
+
+// TODO(casey): This is a global for now.
+global_variable bool GlobalRunning;
+global_variable win32_offscreen_buffer globalBuffer;
+
+
 
 win32_window_dimension Win32GetWindowDimension(HWND Window)
 {
