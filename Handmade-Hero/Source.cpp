@@ -5,10 +5,10 @@ $Revision: $
 $Creator: Casey Muratori $
 $Notice: (C) Copyright 2014 by Molly Rocket, Inc. All Rights Reserved. $
 ======================================================================== */
-
 #include <windows.h>
 #include <stdint.h>
 #include <Xinput.h>
+#include <dsound.h>
 
 #define internal static 
 #define local_persist static 
@@ -18,11 +18,13 @@ typedef int8_t int8;
 typedef int16_t int16;
 typedef int32_t int32;
 typedef int64_t int64;
+typedef int32 bool32;
 
 typedef uint8_t uint8;
 typedef uint16_t uint16;
 typedef uint32_t uint32;
 typedef uint64_t uint64;
+
 
 struct win32_offscreen_buffer
 {
@@ -41,11 +43,13 @@ struct win32_window_dimension
 
 #define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex,  XINPUT_STATE* pState) //if you pass the macro a parameter, it's going to define a function with that name
 #define X_INPUT_SET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex,  XINPUT_VIBRATION* pVibration)
+#define DIRECT_SOUND_CREATE(name) HRESULT WINAPI name(LPCGUID pcGuidDevice, LPDIRECTSOUND *ppDS, LPUNKNOWN pUnkOuter)
+
 
 typedef X_INPUT_GET_STATE(x_input_get_state);
 X_INPUT_GET_STATE(XInputGetStateStub)
 {
-	return 0;
+	return ERROR_DEVICE_NOT_CONNECTED;
 }
 global_variable x_input_get_state* XInputGetState_ = XInputGetStateStub; //makes a pointer to a function with the x_input_get_state function signature
 #define XInputGetState XInputGetState_
@@ -53,18 +57,34 @@ global_variable x_input_get_state* XInputGetState_ = XInputGetStateStub; //makes
 typedef X_INPUT_SET_STATE(x_input_set_state);
 X_INPUT_SET_STATE(XInputSetStateStub)
 {
-	return 0;
+	return ERROR_DEVICE_NOT_CONNECTED;
 }
 global_variable x_input_set_state* XInputSetState_ = XInputSetStateStub;
 #define XInputSetState XInputSetState_
 
+typedef DIRECT_SOUND_CREATE(direct_sound_create);
+
 internal void Win32LoadXInput()
 {
-	HMODULE XInputLibrary = LoadLibrary(L"xinput1_3.dll");
+	//TODO - test this on windows 8 if possible
+	HMODULE XInputLibrary = LoadLibraryA("xinput1_4.dll");
+	if (!XInputLibrary)
+	{
+		HMODULE XInputLibrary = LoadLibraryA("xinput1_3.dll");
+	}
+	else
+	{
+		// diagnostic
+	}
+
 	if (XInputLibrary)
 	{
 		XInputGetState = (x_input_get_state *) GetProcAddress(XInputLibrary, "XInputGetState");
 		XInputSetState = (x_input_set_state *) GetProcAddress(XInputLibrary, "XInputSetState");
+	}
+	else
+	{
+		// diagnostic
 	}
 }
 
@@ -73,7 +93,75 @@ internal void Win32LoadXInput()
 global_variable bool GlobalRunning;
 global_variable win32_offscreen_buffer globalBuffer;
 
+internal void Win32InitDSound(HWND Window, int32 SamplesPerSecond, int32 BufferSize)
+{
+	// load the library
+	HMODULE DSoundLibrary = LoadLibrary(L"dsound.dll");
+	if (DSoundLibrary)
+	{
+		// get a directsound object - cooperative mode
+		//TODO double check that this works on xp
+		direct_sound_create* DirectSoundCreate = (direct_sound_create*)GetProcAddress(DSoundLibrary, "DirectSoundCreate");
+		LPDIRECTSOUND DirectSound;
+		if (DirectSoundCreate && SUCCEEDED(DirectSoundCreate(0, &DirectSound, 0)))
+		{
+			WAVEFORMATEX WaveFormat = {};
+			WaveFormat.wFormatTag = WAVE_FORMAT_PCM; // what type of wave is it?
+			WaveFormat.nChannels = 2;
+			WaveFormat.nSamplesPerSec = SamplesPerSecond;
+			WaveFormat.wBitsPerSample = 16;
+			WaveFormat.nBlockAlign = WaveFormat.nChannels * WaveFormat.wBitsPerSample / 8; // the atomic unit size of your wave type specified by the wFormatTag.
+			WaveFormat.nAvgBytesPerSec = WaveFormat.nSamplesPerSec * WaveFormat.nBlockAlign; // data transfer rate. 
+			WaveFormat.cbSize = 0;
+			// create a primary buffer
+			if (SUCCEEDED(DirectSound->SetCooperativeLevel(Window, DSSCL_PRIORITY))) //sets how the application should play audio when we focus or unfocus the window
+			{
+				DSBUFFERDESC BufferDescription = {sizeof(BufferDescription)};
+				BufferDescription.dwFlags = DSBCAPS_PRIMARYBUFFER;
+				LPDIRECTSOUNDBUFFER PrimaryBuffer;
+				if (SUCCEEDED(DirectSound->CreateSoundBuffer(&BufferDescription, &PrimaryBuffer, 0)))
+				{
+					// the primary buffer just gets a handle to the output device so we can do this setformat to prevent resampling.
+					HRESULT Error = PrimaryBuffer->SetFormat(&WaveFormat);
+					if (SUCCEEDED(Error))
+					{
+						// we have finally set the format of the primary buffer
+						OutputDebugStringA("Primary buffer format was set.\n");
+					}
+					else
+					{
 
+					}
+				}
+			}
+			else
+			{
+
+			}
+
+			// create a secondary buffer ( what we write to)
+			DSBUFFERDESC BufferDescription = {};
+			BufferDescription.dwSize = sizeof(BufferDescription); // how big is our struct, aka WUHT Y IS THIS HERE?
+			BufferDescription.dwFlags = 0;
+			BufferDescription.dwBufferBytes = BufferSize;
+			BufferDescription.lpwfxFormat = &WaveFormat; // the wave format of the buffer. For whatever reason, the primary buffer sets this to NULL and must use DirectSound->setFormat() to set its waveformat
+			LPDIRECTSOUNDBUFFER SecondaryBuffer;
+			HRESULT Error = DirectSound->CreateSoundBuffer(&BufferDescription, &SecondaryBuffer, 0);
+			if (SUCCEEDED(Error))
+			{
+				// start it playing!
+				OutputDebugStringA("Secondary Buffer created successfully\n");
+			}
+			
+
+		}
+		else
+		{
+			// diagnostic
+		}
+	}
+
+}
 
 internal win32_window_dimension Win32GetWindowDimension(HWND Window)
 {
@@ -140,7 +228,7 @@ Win32ResizeDIBSection(win32_offscreen_buffer *Buffer, int Width, int Height)
 	// for clarifying the deal with StretchDIBits and BitBlt!
 	// No more DC for us.
 	int BitmapMemorySize = (Buffer->BitmapWidth*Buffer->BitmapHeight)*BytesPerPixel;
-	Buffer->BitmapMemory = VirtualAlloc(0, BitmapMemorySize, MEM_COMMIT, PAGE_READWRITE); // this will reserve the amount of pages needed to hold BitMapMemorySize
+	Buffer->BitmapMemory = VirtualAlloc(0, BitmapMemorySize, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE); // this will reserve the amount of pages needed to hold BitMapMemorySize
 	Buffer->Pitch = Width * BytesPerPixel; // pitch = how many bytes a pointer has to move to get from one row (of pixels) to the next row.
 	//width = how wide a row is. row width * how many bytes is a pixel = the pitch.
 	// TODO(casey): Probably clear this to black
@@ -237,6 +325,12 @@ Win32MainWindowCallback(HWND Window,
 			}
 		}
 
+		bool32 AltKeyWasDown = LParam & (1 << 29);
+		if (VKCode == VK_F4 && AltKeyWasDown)
+		{
+			GlobalRunning = false;
+		}
+
 	}break;
 
 	case WM_ACTIVATEAPP:
@@ -288,6 +382,7 @@ WinMain(HINSTANCE Instance,
 	/*
 	Empty brackets means clear the memory this struct occupies to 0
 	*/
+	
 	Win32LoadXInput();
 
 	WNDCLASS windowClass = {};
@@ -320,6 +415,9 @@ WinMain(HINSTANCE Instance,
 		{
 			int XOffset = 0;
 			int YOffset = 0;
+
+			Win32InitDSound(Window, 48000, 48000*sizeof(int16) * 2);
+
 			HDC DeviceContext = GetDC(Window);
 			GlobalRunning = true;
 			while (GlobalRunning)
